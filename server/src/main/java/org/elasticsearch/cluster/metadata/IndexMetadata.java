@@ -42,6 +42,7 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.gateway.MetadataStateFormat;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexMode;
+import org.elasticsearch.index.IndexModule;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.IndexVersions;
@@ -51,6 +52,7 @@ import org.elasticsearch.index.seqno.SequenceNumbers;
 import org.elasticsearch.index.shard.IndexLongFieldRange;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.shard.ShardLongFieldRange;
+import org.elasticsearch.indices.replication.common.ReplicationType;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.snapshots.SearchableSnapshotsSettings;
 import org.elasticsearch.xcontent.ToXContent;
@@ -89,7 +91,10 @@ import static org.elasticsearch.snapshots.SearchableSnapshotsSettings.SEARCHABLE
 
 public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragment {
 
+    public static final String REMOTE_STORE_CUSTOM_KEY = "remote_store";
+    public static final String TRANSLOG_METADATA_KEY = "translog_metadata";
     private static final Logger logger = LogManager.getLogger(IndexMetadata.class);
+    private static Version indexUpgradedVersion = null;
 
     public static final ClusterBlock INDEX_READ_ONLY_BLOCK = new ClusterBlock(
         5,
@@ -136,6 +141,82 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         RestStatus.TOO_MANY_REQUESTS,
         EnumSet.of(ClusterBlockLevel.WRITE)
     );
+    private boolean isRemoteSnapshot;
+    public static final String SETTING_REMOTE_STORE_ENABLED = "index.remote_store.enabled";
+    public static final String SETTING_REMOTE_SEGMENT_STORE_REPOSITORY = "index.remote_store.segment.repository";
+    public static final String SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY = "index.remote_store.translog.repository";
+
+
+
+    public static final Setting<Boolean> INDEX_REMOTE_STORE_ENABLED_SETTING = Setting.boolSetting(
+        SETTING_REMOTE_STORE_ENABLED,
+        false,
+        new Setting.Validator<>() {
+
+            @Override
+            public void validate(final Boolean value) {}
+
+            @Override
+            public void validate(final Boolean value, final Map<Setting<?>, Object> settings) {
+                final Object replicationType = settings.get(INDEX_REPLICATION_TYPE_SETTING);
+                if (ReplicationType.SEGMENT.equals(replicationType) == false && value) {
+                    throw new IllegalArgumentException(
+                        "To enable "
+                            + INDEX_REMOTE_STORE_ENABLED_SETTING.getKey()
+                            + ", "
+                            + INDEX_REPLICATION_TYPE_SETTING.getKey()
+                            + " should be set to "
+                            + ReplicationType.SEGMENT
+                    );
+                }
+            }
+
+            @Override
+            public Iterator<Setting<?>> settings() {
+                final List<Setting<?>> settings = List.of(INDEX_REPLICATION_TYPE_SETTING);
+                return settings.iterator();
+            }
+        },
+        Property.IndexScope,
+        Property.PrivateIndex,
+        Property.Dynamic
+    );
+
+    public static final String SETTING_REPLICATION_TYPE = "index.replication.type";
+
+    public static final Setting<ReplicationType> INDEX_REPLICATION_TYPE_SETTING = new Setting<>(
+        SETTING_REPLICATION_TYPE,
+        ReplicationType.DOCUMENT.toString(),
+        ReplicationType::parseString,
+        new Setting.Validator<>() {
+
+            @Override
+            public void validate(final ReplicationType value) {}
+
+            @Override
+            public void validate(final ReplicationType value, final Map<Setting<?>, Object> settings) {
+                final Object remoteStoreEnabled = settings.get(INDEX_REMOTE_STORE_ENABLED_SETTING);
+                if (ReplicationType.SEGMENT.equals(value) == false && Objects.equals(remoteStoreEnabled, true)) {
+                    throw new IllegalArgumentException(
+                        "To enable "
+                            + INDEX_REMOTE_STORE_ENABLED_SETTING.getKey()
+                            + ", "
+                            + INDEX_REPLICATION_TYPE_SETTING.getKey()
+                            + " should be set to "
+                            + ReplicationType.SEGMENT
+                    );
+                }
+            }
+
+            @Override
+            public Iterator<Setting<?>> settings() {
+                final List<Setting<?>> settings = List.of(INDEX_REMOTE_STORE_ENABLED_SETTING);
+                return settings.iterator();
+            }
+        },
+        Property.IndexScope,
+        Property.Final
+    );
 
     // 'event.ingested' (part of Elastic Common Schema) range is tracked in cluster state, along with @timestamp
     public static final String EVENT_INGESTED_FIELD_NAME = "event.ingested";
@@ -144,6 +225,15 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
     public String getDownsamplingInterval() {
         return settings.get(IndexMetadata.INDEX_DOWNSAMPLE_INTERVAL_KEY);
     }
+
+    public boolean isRemoteSnapshot() {
+        return isRemoteSnapshot;
+    }
+
+    public Version getUpgradedVersion() {
+        return indexUpgradedVersion;
+    }
+
 
     public enum State implements Writeable {
         OPEN((byte) 0),
@@ -213,6 +303,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
     public static final String SETTING_NUMBER_OF_SHARDS = "index.number_of_shards";
     public static final Setting<Integer> INDEX_NUMBER_OF_SHARDS_SETTING = buildNumberOfShardsSetting();
     public static final String SETTING_NUMBER_OF_REPLICAS = "index.number_of_replicas";
+
     public static final Setting<Integer> INDEX_NUMBER_OF_REPLICAS_SETTING = Setting.intSetting(
         SETTING_NUMBER_OF_REPLICAS,
         1,
@@ -648,7 +739,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
     private final Long shardSizeInBytesForecast;
 
     private IndexMetadata(
-        final Index index,
+        Version indexUpgradedVersion, final Index index,
         final long version,
         final long mappingVersion,
         final long settingsVersion,
@@ -696,6 +787,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         @Nullable final Double writeLoadForecast,
         @Nullable Long shardSizeInBytesForecast
     ) {
+        this.indexUpgradedVersion = indexUpgradedVersion;
         this.index = index;
         this.version = version;
         assert mappingVersion >= 0 : mappingVersion;
@@ -751,6 +843,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         this.timeSeriesEnd = timeSeriesEnd;
         this.stats = stats;
         this.writeLoadForecast = writeLoadForecast;
+        this.isRemoteSnapshot = IndexModule.Type.REMOTE_SNAPSHOT.match(String.valueOf(this.settings));
         this.shardSizeInBytesForecast = shardSizeInBytesForecast;
         assert numberOfShards * routingFactor == routingNumShards : routingNumShards + " must be a multiple of " + numberOfShards;
     }
@@ -760,7 +853,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
             return this;
         }
         return new IndexMetadata(
-            this.index,
+            indexUpgradedVersion, this.index,
             this.version,
             this.mappingVersion,
             this.settingsVersion,
@@ -821,7 +914,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
             return this;
         }
         return new IndexMetadata(
-            this.index,
+            indexUpgradedVersion, this.index,
             this.version,
             this.mappingVersion,
             this.settingsVersion,
@@ -880,7 +973,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         final long[] incremented = this.primaryTerms.clone();
         incremented[shardId]++;
         return new IndexMetadata(
-            this.index,
+            indexUpgradedVersion, this.index,
             this.version,
             this.mappingVersion,
             this.settingsVersion,
@@ -950,7 +1043,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
             allowedEventIngestedRange = IndexLongFieldRange.UNKNOWN;
         }
         return new IndexMetadata(
-            this.index,
+            indexUpgradedVersion, this.index,
             this.version,
             this.mappingVersion,
             this.settingsVersion,
@@ -1005,7 +1098,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
      */
     public IndexMetadata withIncrementedVersion() {
         return new IndexMetadata(
-            this.index,
+            indexUpgradedVersion, this.index,
             this.version + 1,
             this.mappingVersion,
             this.settingsVersion,
@@ -2392,7 +2485,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
             final IndexMode indexMode = indexModeString != null ? IndexMode.fromString(indexModeString.toLowerCase(Locale.ROOT)) : null;
             final boolean isTsdb = indexMode == IndexMode.TIME_SERIES;
             return new IndexMetadata(
-                new Index(index, uuid),
+                indexUpgradedVersion, new Index(index, uuid),
                 version,
                 mappingVersion,
                 settingsVersion,

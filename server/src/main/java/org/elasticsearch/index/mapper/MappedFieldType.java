@@ -40,6 +40,7 @@ import org.elasticsearch.index.fielddata.FieldDataContext;
 import org.elasticsearch.index.fielddata.IndexFieldData;
 import org.elasticsearch.index.query.DistanceFeatureQueryBuilder;
 import org.elasticsearch.index.query.QueryRewriteContext;
+import org.elasticsearch.index.query.QueryShardContext;
 import org.elasticsearch.index.query.QueryShardException;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.search.DocValueFormat;
@@ -182,6 +183,8 @@ public abstract class MappedFieldType {
     public Function<byte[], Number> pointReaderIfPossible() {
         return null;
     }
+
+    public abstract DerivedFieldValueFetcher valueFetcher(QueryShardContext context, SearchLookup searchLookup, String format);
 
     /**
      * Returns true if the field is aggregatable.

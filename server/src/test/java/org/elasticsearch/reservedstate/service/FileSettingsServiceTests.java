@@ -72,11 +72,16 @@ public class FileSettingsServiceTests extends ESTestCase {
 
         threadpool = new TestThreadPool("file_settings_service_tests");
 
-        clusterService = new ClusterService(
-            Settings.builder().put(NODE_NAME_SETTING.getKey(), "test").build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
-            threadpool,
-            new TaskManager(Settings.EMPTY, threadpool, Set.of())
+
+        clusterService = spy(
+            new ClusterService(
+                Settings.builder().put(NODE_NAME_SETTING.getKey(), "test").build(),
+                new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+                threadpool,
+                new TaskManager(Settings.EMPTY, threadpool, Set.of()),
+                clusterManagerMetrics, clusterManagerMetrics1, stateStats, stateStats1)
+
+
         );
 
         DiscoveryNode localNode = DiscoveryNodeUtils.create("node");

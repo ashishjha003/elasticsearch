@@ -59,9 +59,12 @@ public class CoordinatorRewriteContext extends QueryRewriteContext {
             null,
             null,
             null,
+            null,
+            xContentRegistry, validate);
+        this.indexLongFieldRange = indexLongFieldRange;
+        this.timestampFieldType = timestampFieldType;
             null
         );
-        this.dateFieldRangeInfo = dateFieldRangeInfo;
     }
 
     /**
